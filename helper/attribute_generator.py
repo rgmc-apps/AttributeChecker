@@ -7,7 +7,7 @@ import time
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
-from config import WITH_DESCRIPTION, DIRECTORY_PATH, API_KEY, PROMPT_NODESC, PROMPT_WDESC, GPT_LIMIT
+from config import WITH_DESCRIPTION, DIRECTORY_PATH, API_KEY, PROMPT_NODESC, PROMPT_WDESC, GPT_LIMIT, GPT_VERSION
 
 
 class AttributeGenerator(object):
@@ -21,6 +21,7 @@ class AttributeGenerator(object):
         self.__apikey = API_KEY
         self.__rpm_limit = GPT_LIMIT
         self.__logger = logger
+        self.__gpt_version = GPT_VERSION
 
         # Determine what prompt will be used
         if self.__with_description:
@@ -40,10 +41,10 @@ class AttributeGenerator(object):
     # Function to add description
     def __get_product_description(self, image_path):
         if os.path.exists(image_path + ".txt"):
-            with open(image_path + ".txt", "r") as description_file:
+            with open(image_path.strip().lower() + ".txt", "r") as description_file:
                 return ''.join(description_file.readlines())
         else:
-            self.__logger.warning('{} has no corresponding text file'.format(image_path)) 
+            self.__logger.warning('{}.txt has no corresponding text file'.format(image_path)) 
 
     def __get_image_filepaths(self):
         """
@@ -70,7 +71,7 @@ class AttributeGenerator(object):
         }
 
         payload = {
-        "model": "gpt-4.1",
+        "model": self.__gpt_version,
 
         "messages": [
             {
@@ -104,19 +105,17 @@ class AttributeGenerator(object):
         entry_count = 0  # this will watch the requests per minute (rpm) of gpt 4.1
 
         self.__logger.info(imagelist)
-        retval = []
 
         for file in imagelist:
             base64_image = self.__encode_image(file)
 
             if self.__with_description:
                 description = self.__get_product_description(file)  # one long string
-                self.__prompt = '{} {}'.format(self.__prompt, description)
+                self.__prompt = '{} \n {}'.format(self.__prompt, description)
                 
-            if entry_count == GPT_LIMIT:
+            if entry_count >= GPT_LIMIT:
                 self.__logger.info('Rate limit reached for gpt-4.1 on requests per min (RPM): Limit 3, Used 3. Will pause for 20 seconds.')
                 time.sleep(21)
-                entry_count = 0
 
             self.__logger.info('Start Prompt for {}'.format(file))
             response = self.__get_gpt_response(base64_image)
@@ -125,29 +124,35 @@ class AttributeGenerator(object):
             json_dict = response.json()
             choices = json_dict.get('choices', [])
 
-            # print(json_dict)
-
             if choices:
                 message = choices[0].get('message', {})
                 csv_str = message.get('content')      
                 csv_reader = csv.reader(StringIO(csv_str))
-                ignore_line = next(csv_reader)
+                self.__logger.info('Prompt Finished. Full Response Below: \n {} \n'.format(csv_str))
+                content_headers = []
+                row = []
 
-                if saved_header is None:
-                    saved_header = ['filename'] + next(csv_reader)
+                # find csv contents:
+                for line in csv_reader:
+                    if '```csv' in line:
+                        content_headers = next(csv_reader)
+                        row = next(csv_reader)
+                        break
 
-                if attributes_table:
-                   ignore_line = next(csv_reader)
+                if content_headers and row:
+                    if saved_header is None:
+                        saved_header = ['filename'] + content_headers
 
-                row = next(csv_reader)
-                row = list(map(lambda s: s.strip(), row))
-                attributes_table = attributes_table + [[Path(file).name] + row]
+                    row = list(map(lambda s: s.strip(), row))
+                    attributes_table = attributes_table + [[Path(file).name] + row]
+                else:
+                    self.__logger.warning('{} - Not Processed, GPT response returned no CSV format'.format(Path(file).name))
             else:
-                self.__logger.warning('{} - Not Processed by GPT. Response unexpected: {}'.format(file, response.json()))
+                self.__logger.warning('{} - Not Processed. Response unexpected: {}'.format(Path(file).name, response.json()))
 
         if attributes_table:
-            # filename = os.path.join(self.__filepath, 'attributes-{}.csv'.format(datetime.now().strftime('%FT%XZ')))
-            filename = 'attributes_{}.csv'.format(datetime.now().strftime("%Y%m%dT%H%M"))
+            desc = 'WITHDESC' if self.__with_description else 'NODESC'
+            filename = '{}/attributes_{}_{}.csv'.format(DIRECTORY_PATH,desc, datetime.now().strftime("%Y%m%dT%H%M"))
             with open(filename, 'w', newline='') as csvfile:
                 writer = csv.writer(csvfile)
                 writer.writerow(saved_header)

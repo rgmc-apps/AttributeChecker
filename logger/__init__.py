@@ -15,7 +15,7 @@ class LogHandler(object):
         """Basic logger with fixed directory."""
         file_name = '{0}'.format(logger_name)
 
-        filename = './logs/{0}.log'.format(file_name)
+        filename = './program-logs/{0}.log'.format(file_name)
         os.makedirs(os.path.dirname(filename), exist_ok=True)
 
         if logging.getLogger(logger_name).handlers:
