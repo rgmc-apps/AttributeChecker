@@ -103,8 +103,19 @@ class AttributeGenerator(object):
         attributes_table: list[list[str]] = []
         saved_header: list[str] = None
         entry_count = 0  # this will watch the requests per minute (rpm) of gpt 4.1
+        retval = {
+            'message': '',
+            'status': '',
+            'directory': ''
+        }
 
         self.__logger.info(imagelist)
+
+        if len(imagelist) == 0:
+            self.__logger.warning('No images were present in the given directory - {}'.format(self.__filepath))
+            retval['message'] = 'No images were present in the given directory'
+            retval['status'] = 'Finished'
+            return retval
 
         for file in imagelist:
             base64_image = self.__encode_image(file)
@@ -157,5 +168,12 @@ class AttributeGenerator(object):
                 writer = csv.writer(csvfile)
                 writer.writerow(saved_header)
                 writer.writerows(attributes_table)
+            
+            retval['message'] = 'Program Successfully Finished. CSV file generated: {}'.format(filename)
+            retval['status'] = 'Success'
+            retval['filename'] = filename
+
+        
+        return retval
 
         

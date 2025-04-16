@@ -18,6 +18,7 @@ if __name__ == '__main__':
         logger.info('Start GPT Image attribute generator')
         logger.info('File Path: {}'.format(DIRECTORY_PATH))
         logger.info('With Lookup Description: {}'.format(WITH_DESCRIPTION))
-        AttributeGenerator(logger).main()
+        res = AttributeGenerator(logger).main()
+        logger.info(res.get('message', 'Script finished running'))
     except Exception as e:
         logger.error('Error while running: {} \n {}'.format(e, traceback.format_exc()))
