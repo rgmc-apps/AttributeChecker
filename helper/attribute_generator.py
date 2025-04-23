@@ -7,7 +7,7 @@ import time
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
-from config import WITH_DESCRIPTION, DIRECTORY_PATH, API_KEY, PROMPT_NODESC, PROMPT_WDESC, GPT_LIMIT, GPT_VERSION
+from config import API_KEY, GPT_LIMIT, GPT_VERSION
 
 
 class AttributeGenerator(object):
@@ -15,19 +15,24 @@ class AttributeGenerator(object):
        Transferred functions from the script provided.
     """
 
-    def __init__(self, logger):
-        self.__with_description = WITH_DESCRIPTION
-        self.__filepath = DIRECTORY_PATH
+    def __init__(self, logger, data):
+        self.__filepath = data.get('filepath', '')
         self.__apikey = API_KEY
         self.__rpm_limit = GPT_LIMIT
         self.__logger = logger
         self.__gpt_version = GPT_VERSION
+        self.__with_description = True
+        self.__attributes = data.get('attributes', '')
 
-        # Determine what prompt will be used
-        if self.__with_description:
-            self.__prompt = PROMPT_WDESC
-        else:
-            self.__prompt = PROMPT_NODESC
+        # Path to the images
+        # New Feature: Now able to get all image files (.web3) on a given directory, thus making it able to process per batch   
+
+
+        # With product description - this will be used if WITH_DESCRIPTION is set to True:
+        self.__prompt_wdesc = "Tell me attributes of the clothing in the image in CSV format(make sure to enclose with ```csv ```). I would like to know its {}. You can also use the product description below to help find the attributes: ".format(self.__attributes)
+
+        # Without product description - this will be used if WITH_DESCRIPTION is set to False:
+        self.__prompt_nodesc = "Tell me attributes of the clothing in the image in CSV format(make sure to enclose with ```csv ```) with a header line. I would like to know its {}. Also give a short product description for the clothing".format(self.__attributes)
 
     # Function to encode the image
     def __encode_image(self, image_path):
@@ -36,15 +41,20 @@ class AttributeGenerator(object):
                 return base64.b64encode(image_file.read()).decode('utf-8')
         else:
             self.__logger.warning('{} image file does not exists'.format(image_file)) 
-        
     
+    def join_and(items):
+        return ', '.join(items[:-1]) + ' and '+items[-1]
+          
     # Function to add description
     def __get_product_description(self, image_path):
-        if os.path.exists(image_path + ".txt"):
+        retval = ''
+        if os.path.exists(image_path + "_description.txt"):
             with open(image_path.strip().lower() + ".txt", "r") as description_file:
-                return ''.join(description_file.readlines())
+                return retval.join(description_file.readlines())
         else:
             self.__logger.warning('{}.txt has no corresponding text file'.format(image_path)) 
+        
+        return retval
 
     def __get_image_filepaths(self):
         """
@@ -119,12 +129,16 @@ class AttributeGenerator(object):
 
         for file in imagelist:
             base64_image = self.__encode_image(file)
+            description = self.__get_product_description(file)
 
-            if self.__with_description:
-                description = self.__get_product_description(file)  # one long string
-                self.__prompt = '{} \n {}'.format(self.__prompt, description)
+            if description:
+                self.__prompt = '{} \n {}'.format(self.__prompt_wdesc, description)
+                self.__with_description = True
+            else:
+                self.__prompt = self.__prompt_nodesc
+                self.__with_description = False
                 
-            if entry_count >= GPT_LIMIT:
+            if entry_count >= self.__rpm_limit:
                 self.__logger.info('Rate limit reached for gpt-4.1 on requests per min (RPM): Limit 3, Used 3. Will pause for 20 seconds.')
                 time.sleep(21)
 
@@ -134,13 +148,14 @@ class AttributeGenerator(object):
 
             json_dict = response.json()
             choices = json_dict.get('choices', [])
-
+            
             if choices:
                 message = choices[0].get('message', {})
                 csv_str = message.get('content')      
                 csv_reader = csv.reader(StringIO(csv_str))
                 self.__logger.info('Prompt Finished. Full Response Below: \n {} \n'.format(csv_str))
                 content_headers = []
+                main_description = ''
                 row = []
 
                 # find csv contents:
@@ -148,8 +163,18 @@ class AttributeGenerator(object):
                     if '```csv' in line:
                         content_headers = next(csv_reader)
                         row = next(csv_reader)
-                        break
-
+                        continue
+                    for char in line:
+                        if 'product description' in char.strip().lower(): 
+                            desc = next(csv_reader)
+                            main_description = ', '.join(desc)
+                            text_filename = '{}/{}-{}-description.txt'.format(self.__filepath, Path(file).parent.name, Path(file).stem)
+                            with open(text_filename, 'w') as text_file:
+                                for attribute in row:
+                                    text_file.write('- {} \n'.format(attribute))
+                                text_file.write('{}'.format(main_description))
+                            continue
+                    
                 if content_headers and row:
                     if saved_header is None:
                         saved_header = ['filename'] + content_headers
@@ -162,8 +187,8 @@ class AttributeGenerator(object):
                 self.__logger.warning('{} - Not Processed. Response unexpected: {}'.format(Path(file).name, response.json()))
 
         if attributes_table:
-            desc = 'WITHDESC' if self.__with_description else 'NODESC'
-            filename = '{}/attributes_{}_{}.csv'.format(DIRECTORY_PATH,desc, datetime.now().strftime("%Y%m%dT%H%M"))
+            foldername = os.path.basename(self.__filepath)
+            filename = '{}/{}_attributes_{}.csv'.format(self.__filepath, foldername, datetime.now().strftime("%Y%m%dT%H%M"))
             with open(filename, 'w', newline='') as csvfile:
                 writer = csv.writer(csvfile)
                 writer.writerow(saved_header)
