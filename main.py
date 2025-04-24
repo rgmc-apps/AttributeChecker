@@ -1,7 +1,4 @@
-import base64
-import csv
 from io import StringIO
-import requests
 import os
 import logging
 from pathlib import Path, PureWindowsPath
