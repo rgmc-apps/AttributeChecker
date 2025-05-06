@@ -160,6 +160,7 @@ class AttributeGenerator(object):
 
                 # find csv contents:
                 for line in csv_reader:
+                    
                     if '```csv' in line:
                         content_headers = next(csv_reader)
                         row = next(csv_reader)
@@ -170,8 +171,10 @@ class AttributeGenerator(object):
                             main_description = ', '.join(desc)
                             text_filename = '{}/{}-{}-description.txt'.format(self.__filepath, Path(file).parent.name, Path(file).stem)
                             with open(text_filename, 'w') as text_file:
+                                att_count = 0
                                 for attribute in row:
-                                    text_file.write('- {} \n'.format(attribute))
+                                    text_file.write('{}: {} \n'.format(content_headers[att_count].capitalize(), attribute))
+                                    att_count += 1
                                 text_file.write('{}'.format(main_description))
                             continue
                     
