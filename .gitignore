@@ -175,3 +175,10 @@ cython_debug/
 
 program-logs/
 bin/
+exe/
+output/
+
+
+# Config Files
+config.py
+testcsv.py
