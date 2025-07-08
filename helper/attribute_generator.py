@@ -7,7 +7,8 @@ import time
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
-from config import API_KEY, GPT_LIMIT, GPT_VERSION
+from config import API_KEY, GPT_LIMIT, GPT_VERSION, SCRIPT_VERSION, PROMPT_V2
+from pprint import pprint
 
 
 class AttributeGenerator(object):
@@ -27,13 +28,16 @@ class AttributeGenerator(object):
         # Path to the images
         # New Feature: Now able to get all image files (.web3) on a given directory, thus making it able to process per batch   
 
-
-        # With product description - this will be used if WITH_DESCRIPTION is set to True:
-        self.__prompt_wdesc = "Tell me attributes of the clothing in the image in CSV format(make sure to enclose with ```csv ```). I would like to know its {}. You can also use the product description below to help find the attributes: ".format(self.__attributes)
-
-        # Without product description - this will be used if WITH_DESCRIPTION is set to False:
-        self.__prompt_nodesc = "Tell me attributes of the clothing in the image in CSV format(make sure to enclose with ```csv ```) with a header line. I would like to know its {}. Also give a short product description for the clothing".format(self.__attributes)
-
+        if SCRIPT_VERSION == 1: 
+            # With product description - this will be used if WITH_DESCRIPTION is set to True:
+            self.__prompt_wdesc = "Tell me attributes of the clothing in the image in CSV format(make sure to enclose with ```csv ```). I would like to know its {}. You can also use the product description below to help find the attributes: ".format(self.__attributes)
+            # Without product description - this will be used if WITH_DESCRIPTION is set to False:
+            self.__prompt_nodesc = "Tell me attributes of the clothing in the image in CSV format(make sure to enclose with ```csv ```) with a header line. I would like to know its {}. Also give a short product description for the clothing".format(self.__attributes)      
+        else:
+            # New format for the prompt output
+            # self.__prompt = open('myPrompt.txt', encoding='utf-8')
+            self.__prompt = PROMPT_V2
+            
     # Function to encode the image
     def __encode_image(self, image_path):
         if os.path.exists(image_path):
@@ -100,7 +104,7 @@ class AttributeGenerator(object):
             ]
             }
         ],
-        "max_tokens": 300
+        "max_tokens": 400
         }
 
         response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
@@ -126,82 +130,116 @@ class AttributeGenerator(object):
             retval['message'] = 'No images were present in the given directory'
             retval['status'] = 'Finished'
             return retval
+        
+        if SCRIPT_VERSION > 1:
+            for file in imagelist:
+                base64_image = self.__encode_image(file)
 
-        for file in imagelist:
-            base64_image = self.__encode_image(file)
-            description = self.__get_product_description(file)
+                if entry_count >= self.__rpm_limit:
+                    self.__logger.info('Rate limit reached for gpt-4.1 on requests per min (RPM): Limit 3, Used 3. Will pause for 20 seconds.')
+                    time.sleep(21)
 
-            if description:
-                self.__prompt = '{} \n {}'.format(self.__prompt_wdesc, description)
-                self.__with_description = True
-            else:
-                self.__prompt = self.__prompt_nodesc
-                self.__with_description = False
-                
-            if entry_count >= self.__rpm_limit:
-                self.__logger.info('Rate limit reached for gpt-4.1 on requests per min (RPM): Limit 3, Used 3. Will pause for 20 seconds.')
-                time.sleep(21)
+                if file:
+                    self.__logger.info('Start Prompt for {}'.format(file))
+                    response = self.__get_gpt_response(base64_image)
 
-            self.__logger.info('Start Prompt for {}'.format(file))
-            response = self.__get_gpt_response(base64_image)
-            entry_count += 1
+                    json_dict = response.json()
+                    choices = json_dict.get('choices', [])
 
-            json_dict = response.json()
-            choices = json_dict.get('choices', [])
-            
-            if choices:
-                message = choices[0].get('message', {})
-                csv_str = message.get('content')      
-                csv_reader = csv.reader(StringIO(csv_str))
-                self.__logger.info('Prompt Finished. Full Response Below: \n {} \n'.format(csv_str))
-                content_headers = []
-                main_description = ''
-                row = []
+                    if choices:
+                        message = choices[0].get('message', {})
+                        csv_str = message.get('content')
+                        csv_str = message.get('content')      
+                        csv_reader = csv.reader(StringIO(csv_str))
+                        # self.__logger.info('Prompt Finished. Full Response Below: \n {} \n'.format(csv_str))
+                        text_filename = '{}/{}-{}-description-v2.txt'.format(self.__filepath, Path(file).parent.name, Path(file).stem)     
+                        with open(text_filename, "w", encoding="utf-8", newline='\n') as text_file:
+                            for line in csv_reader:
+                                for char in line: 
+                                    if char:
+                                        text_file.write('{}'.format(char))
+                                text_file.write('\n')
+                        
+                        self.__logger.info('File successfully created - {}'.format(text_filename))
+                        retval['message'] = 'Program Successfully Finished. CSV file generated: {}'.format(text_filename)
+                        retval['status'] = 'Success'
+                        retval['filename'] = text_filename
+                    else:
+                       retval['message'] = 'No results were found in the response'
+                       retval['status'] = 'Error'
+        else:
+            for file in imagelist:
+                base64_image = self.__encode_image(file)
+                description = self.__get_product_description(file)
 
-                # find csv contents:
-                for line in csv_reader:
-                    
-                    if '```csv' in line:
-                        content_headers = next(csv_reader)
-                        row = next(csv_reader)
-                        continue
-                    for char in line:
-                        if 'product description' in char.strip().lower(): 
-                            desc = next(csv_reader)
-                            main_description = ', '.join(desc)
-                            text_filename = '{}/{}-{}-description.txt'.format(self.__filepath, Path(file).parent.name, Path(file).stem)
-                            with open(text_filename, 'w') as text_file:
-                                att_count = 0
-                                for attribute in row:
-                                    text_file.write('{}: {} \n'.format(content_headers[att_count].capitalize(), attribute))
-                                    att_count += 1
-                                text_file.write('{}'.format(main_description))
-                            continue
-                    
-                if content_headers and row:
-                    if saved_header is None:
-                        saved_header = ['filename'] + content_headers
-
-                    row = list(map(lambda s: s.strip(), row))
-                    attributes_table = attributes_table + [[Path(file).name] + row]
+                if description:
+                    self.__prompt = '{} \n {}'.format(self.__prompt_wdesc, description)
+                    self.__with_description = True
                 else:
-                    self.__logger.warning('{} - Not Processed, GPT response returned no CSV format'.format(Path(file).name))
-            else:
-                self.__logger.warning('{} - Not Processed. Response unexpected: {}'.format(Path(file).name, response.json()))
+                    self.__prompt = self.__prompt_nodesc
+                    self.__with_description = False
+                    
+                if entry_count >= self.__rpm_limit:
+                    self.__logger.info('Rate limit reached for gpt-4.1 on requests per min (RPM): Limit 3, Used 3. Will pause for 20 seconds.')
+                    time.sleep(21)
 
-        if attributes_table:
-            foldername = os.path.basename(self.__filepath)
-            filename = '{}/{}_attributes_{}.csv'.format(self.__filepath, foldername, datetime.now().strftime("%Y%m%dT%H%M"))
-            with open(filename, 'w', newline='') as csvfile:
-                writer = csv.writer(csvfile)
-                writer.writerow(saved_header)
-                writer.writerows(attributes_table)
-            
-            retval['message'] = 'Program Successfully Finished. CSV file generated: {}'.format(filename)
-            retval['status'] = 'Success'
-            retval['filename'] = filename
+                self.__logger.info('Start Prompt for {}'.format(file))
+                response = self.__get_gpt_response(base64_image)
+                entry_count += 1
 
-        
+                json_dict = response.json()
+                choices = json_dict.get('choices', [])
+                
+                if choices:
+                    message = choices[0].get('message', {})
+                    csv_str = message.get('content')      
+                    csv_reader = csv.reader(StringIO(csv_str))
+                    self.__logger.info('Prompt Finished. Full Response Below: \n {} \n'.format(csv_str))
+                    content_headers = []
+                    main_description = ''
+                    row = []
+
+                    # find csv contents:
+                    for line in csv_reader:
+                        
+                        if '```csv' in line:
+                            content_headers = next(csv_reader)
+                            row = next(csv_reader)
+                            continue
+                        for char in line:
+                            if 'product description' in char.strip().lower(): 
+                                desc = next(csv_reader)
+                                main_description = ', '.join(desc)
+                                text_filename = '{}/{}-{}-description.txt'.format(self.__filepath, Path(file).parent.name, Path(file).stem)
+                                with open(text_filename, 'w') as text_file:
+                                    att_count = 0
+                                    for attribute in row:
+                                        text_file.write('{}: {} \n'.format(content_headers[att_count].capitalize(), attribute))
+                                        att_count += 1
+                                    text_file.write('{}'.format(main_description))
+                                continue
+                        
+                    if content_headers and row:
+                        if saved_header is None:
+                            saved_header = ['filename'] + content_headers
+
+                        row = list(map(lambda s: s.strip(), row))
+                        attributes_table = attributes_table + [[Path(file).name] + row]
+                    else:
+                        self.__logger.warning('{} - Not Processed, GPT response returned no CSV format'.format(Path(file).name))
+                else:
+                    self.__logger.warning('{} - Not Processed. Response unexpected: {}'.format(Path(file).name, response.json()))
+
+            if attributes_table:
+                foldername = os.path.basename(self.__filepath)
+                filename = '{}/{}_attributes_{}.csv'.format(self.__filepath, foldername, datetime.now().strftime("%Y%m%dT%H%M"))
+                with open(filename, 'w', newline='') as csvfile:
+                    writer = csv.writer(csvfile)
+                    writer.writerow(saved_header)
+                    writer.writerows(attributes_table)
+                
+                retval['message'] = 'Program Successfully Finished. CSV file generated: {}'.format(filename)
+                retval['status'] = 'Success'
+                retval['filename'] = filename
+
         return retval
-
-        
