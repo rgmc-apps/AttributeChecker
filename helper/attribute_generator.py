@@ -3,11 +3,12 @@ import csv
 import json
 import requests
 import os
-import time
+import time 
+import xlsxwriter  
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
-from config import API_KEY, GPT_LIMIT, GPT_VERSION, SCRIPT_VERSION, PROMPT_V2
+from config import API_KEY, GPT_LIMIT, GPT_VERSION, SCRIPT_VERSION, PROMPT_V2, GENERATE_TEXT
 from pprint import pprint
 
 
@@ -62,10 +63,10 @@ class AttributeGenerator(object):
 
     def __get_image_filepaths(self):
         """
-        This function will generate the file names in a directory 
-        tree by walking the tree either top-down or bottom-up. For each 
-        directory in the tree rooted at directory top (including top itself), 
-        it yields a 3-tuple (dirpath, dirnames, filenames).
+            This function will generate the file names in a directory 
+            tree by walking the tree either top-down or bottom-up. For each 
+            directory in the tree rooted at directory top (including top itself), 
+            it yields a 3-tuple (dirpath, dirnames, filenames).
         """
         retval = []
         directory = self.__filepath
@@ -75,36 +76,46 @@ class AttributeGenerator(object):
                 filepath = os.path.join(root, filename)
                 if filename.endswith('.webp'):
                     retval.append(filepath)
+                    break
+                if filename.endswith('.jpeg'):
+                    retval.append(filepath)
+                    break
+                if filename.endswith('.jpg'):
+                    retval.append(filepath)
+                    break    
+                if filename.endswith('.png'):
+                    retval.append(filepath)  
+                    break 
 
         return retval 
     
     def __get_gpt_response(self, image_binary):
         headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {self.__apikey}"
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.__apikey}"
         }
 
         payload = {
-        "model": self.__gpt_version,
+            "model": self.__gpt_version,
 
-        "messages": [
-            {
-            "role": "user",
-            "content": [
+            "messages": [
                 {
-                "type": "text",
-                "text": self.__prompt
-                },
-                {
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/jpeg;base64,{image_binary}"
+                "role": "user",
+                "content": [
+                    {
+                    "type": "text",
+                    "text": self.__prompt
+                    },
+                    {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{image_binary}"
+                    }
+                    }
+                ]
                 }
-                }
-            ]
-            }
-        ],
-        "max_tokens": 400
+            ],
+            "max_tokens": 600
         }
 
         response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
@@ -123,7 +134,7 @@ class AttributeGenerator(object):
             'directory': ''
         }
 
-        self.__logger.info(imagelist)
+        self.__logger.debug(imagelist)
 
         if len(imagelist) == 0:
             self.__logger.warning('No images were present in the given directory - {}'.format(self.__filepath))
@@ -132,9 +143,23 @@ class AttributeGenerator(object):
             return retval
         
         if SCRIPT_VERSION > 1:
+            xls_filename = '{}/{}-{}.xlsx'.format(
+                self.__filepath, 
+                Path(self.__filepath).parent.name, 
+                datetime.now().strftime("%Y%m%dT%H%M"))
+            workbook = xlsxwriter.Workbook(xls_filename)
+            xls_row = 1 
+            xls_column = 0
+            worksheet1 = workbook.add_worksheet()    
+            worksheet1.write(0, 0, 'Image file name')
+            worksheet1.write(0, 1, 'Product Title')
+            worksheet1.write(0, 2, 'Product Description')
+            file_list = []
             for file in imagelist:
                 base64_image = self.__encode_image(file)
-
+                dirlist = file.split('\\')
+                file_ext = '-'.join(dirlist[-3:])
+                
                 if entry_count >= self.__rpm_limit:
                     self.__logger.info('Rate limit reached for gpt-4.1 on requests per min (RPM): Limit 3, Used 3. Will pause for 20 seconds.')
                     time.sleep(21)
@@ -145,28 +170,65 @@ class AttributeGenerator(object):
 
                     json_dict = response.json()
                     choices = json_dict.get('choices', [])
-
+                    cnt = 1
+                    product_name = ''
+                    product_desc = ''
+                    
                     if choices:
                         message = choices[0].get('message', {})
                         csv_str = message.get('content')
-                        csv_str = message.get('content')      
+                        csv_str = message.get('content')
                         csv_reader = csv.reader(StringIO(csv_str))
                         # self.__logger.info('Prompt Finished. Full Response Below: \n {} \n'.format(csv_str))
-                        text_filename = '{}/{}-{}-description-v2.txt'.format(self.__filepath, Path(file).parent.name, Path(file).stem)     
-                        with open(text_filename, "w", encoding="utf-8", newline='\n') as text_file:
+                        text_filename = '{}/{}-{}-description-v2.txt'.format(self.__filepath, file_ext, Path(file).stem)   
+                        worksheet1.write(xls_row, xls_column, '{}'.format(file))
+
+                        if GENERATE_TEXT:
+                            self.__logger.info('Generate Text File Mode is On. This script will generate text files per image AND Generate an excel file for summary')
+                            with open(text_filename, "w", encoding="utf-8", newline='\n') as text_file:
+                                for line in csv_reader:
+                                    for char in line:
+                                        if cnt == 1:
+                                            product_name = char.replace('*', '')
+                                        if char:
+                                            text_file.write('{}'.format(char))
+                                            product_desc += char
+                                        cnt += 1
+                                    text_file.write('\n')
+                                    product_desc += '\n'
+                            self.__logger.info('File successfully created - {}'.format(text_filename))
+                            worksheet1.write(xls_row, xls_column + 1, '{}'.format(product_name))
+                            worksheet1.write(xls_row, xls_column + 2, '{}'.format(product_desc))
+                            xls_row += 1
+                            file_list.append(text_filename)
+                        else:
+                            self.__logger.info('Generate Text File Mode is Off. This script will Generate an excel file for summary only')
                             for line in csv_reader:
-                                for char in line: 
+                                for char in line:
+                                    if cnt == 1:
+                                        product_name = char.replace('*', '')
                                     if char:
-                                        text_file.write('{}'.format(char))
-                                text_file.write('\n')
+                                        product_desc += char
+                                    cnt += 1
+                                product_desc += '\n'
                         
-                        self.__logger.info('File successfully created - {}'.format(text_filename))
-                        retval['message'] = 'Program Successfully Finished. CSV file generated: {}'.format(text_filename)
-                        retval['status'] = 'Success'
-                        retval['filename'] = text_filename
+                            worksheet1.write(xls_row, xls_column + 1, '{}'.format(product_name))
+                            worksheet1.write(xls_row, xls_column + 2, '{}'.format(product_desc))
+                            xls_row += 1
+
+                        self.__logger.info('Successfully generated excel file on {}'.format(xls_filename))
+                        if GENERATE_TEXT:
+                            retval['message'] = 'Text Files and Excel file were successfully Generated'
+                            retval['filename'] = '{}'.format(text_filename)
+                        else:
+                            retval['message'] = 'Excel file was successfully Generated'
+                            retval['filename'] = xls_filename
+
+                        retval['status'] = 'Finished'
                     else:
                        retval['message'] = 'No results were found in the response'
                        retval['status'] = 'Error'
+            workbook.close()           
         else:
             for file in imagelist:
                 base64_image = self.__encode_image(file)
@@ -217,6 +279,7 @@ class AttributeGenerator(object):
                                         text_file.write('{}: {} \n'.format(content_headers[att_count].capitalize(), attribute))
                                         att_count += 1
                                     text_file.write('{}'.format(main_description))
+
                                 continue
                         
                     if content_headers and row:
