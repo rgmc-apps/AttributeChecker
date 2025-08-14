@@ -51,5 +51,6 @@ if __name__ == '__main__':
             print('filepath-name: ---- {}'.format(filepath.name))
             res = AttributeGenerator(logger, data).main()
             logger.info(res.get('message', 'Version {}: Script finished running'.format(SCRIPT_VERSION)))
+            input("Press any key to exit...")
     except Exception as e:
         logger.error('Error while running: {} \n {}'.format(e, traceback.format_exc()))
